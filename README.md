@@ -57,7 +57,7 @@ JSON as a file
 $ emby-client -a ${EMBY_API} -s 1.2.3.4:8096 --update --id 96528 --json /tmp/movie-data.json
 ```
 
-### Movies with Missing IMDB id
+### Movies missing its IMDB id
 
 ```
 $ emby-client -a ${EMBY_API} -s 1.2.3.4:8096 --missing-imdb
