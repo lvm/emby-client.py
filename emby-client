@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+
+"""
+git-profile - Emby Client in Pure Python with zero 3rd Party dependencies.
+License: BSD 3-Clause
+Copyright (c) 2020, Mauro <mauro@sdf.org>
+All rights reserved.
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+1. Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+notice, this list of conditions and the following disclaimer in the
+documentation and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+"""
+
+__author__ = "Mauro L"
+__version__ = "0.0.1"
+__license__ = "BSD3"
+
+import re
+import csv
+import sys
+import json
+import argparse
+import datetime
+import http.client
+import urllib.request
+from pathlib import Path
+from pprint import pprint
+
+
+def http_get(server: str, path: str) -> tuple:
+    """HTTP GET Requests"""
+    try:
+        host, port = server.split(":") if ":" in server else (server, 8096)
+        con = http.client.HTTPConnection(host, port)
+        con.request("GET", path)
+        res = con.getresponse()
+    except:
+        data, status = [], res.status
+    else:
+        data, status = json.loads(res.read().decode()), res.status
+
+    return data, status
+
+
+def http_post(server: str, path: str, params: dict) -> tuple:
+    """HTTP POST Requests"""
+    try:
+        host, port = server.split(":") if ":" in server else (server, 8096)
+        con = http.client.HTTPConnection(host, port)
+        headers = {"Content-type": "application/json", "Accept": "text/plain"}
+        con.request("POST", path, json.dumps(params), headers)
+        res = con.getresponse()
+    except:
+        data, status = [], res.status
+    finally:
+        data, status = res.read(), res.status
+
+    return data, status
+
+
+def sanitize(name: str) -> str:
+    """
+    Tries its best to clean an underscored name.
+    It started being more complex, but it wasn't really necessary.
+    """
+    return name.replace("_", " ")
+
+
+def runtimeticks_to_human(runtimeticks: int) -> str:
+    """Converts RunTimeTicks to NNN mn"""
+    human_time = ""
+    if runtimeticks:
+        tdelta = datetime.timedelta(seconds=runtimeticks / 600000000.0)
+        _, hm = divmod(tdelta.seconds, 3600)
+        human_time = f"{hm} mn"
+
+    return human_time
+
+
+def video_resolution(mediasrc: list) -> str:
+    """Looks for a movie resolution"""
+    if mediasrc and mediasrc[0].get("MediaStreams"):
+        height = mediasrc[0].get("MediaStreams")[0].get("Height")
+        width = mediasrc[0].get("MediaStreams")[0].get("Width")
+        return f"{width} * {height}"
+
+    return ""
+
+
+def has_subtitles(mediasrc: list) -> bool:
+    """Does it?"""
+    sub = False
+    for stream in mediasrc[0].get("MediaStreams"):
+        if stream.get("Type") == "Subtitle":
+            sub = True
+            break
+
+    return "x" if sub else ""
+
+
+def get_imdb_id(providers: list) -> str:
+    """Looks for IMDB ids"""
+    imdb_id = ""
+    if "Imdb" in list(providers.keys()):
+        imdb_id = "https://www.imdb.com/title/" + providers.get("Imdb")
+
+    return imdb_id
+
+
+def read_json(_json: str) -> dict:
+    """Normally used when Updating a single Movie record"""
+    path = Path(_json)
+    if path.is_file():
+        with open(_json, "r") as f:
+            return json.loads("".join(f.readlines()))
+    else:
+        return json.loads(bytes(path))
+
+
+def get_media(server: str, api_key: str) -> list:
+    """Retrieves the complete Movie list"""
+    path = f"/Users/{api_key}/Items"
+    path += f"?Recursive=true&IncludeItemTypes=Movie"
+    path += f"&api_key={api_key}"
+    path += "&Fields=ProviderIds,Path,Genres,ProductionYear,MediaStreams"
+
+    response, _ = http_get(server, path)
+    movies = []
+    items = response.get("Items")
+    total = response.get("TotalRecordCount")
+
+    for movie in items:
+        movies.append(
+            [
+                movie.get("Id"),
+                sanitize(movie.get("Name")),
+                movie.get("ProductionYear"),
+                ";".join(movie.get("Genres") or []),
+                runtimeticks_to_human(movie.get("RunTimeTicks")),
+                video_resolution(movie.get("MediaSources")),
+                has_subtitles(movie.get("MediaSources")),
+                get_imdb_id(movie.get("ProviderIds")),
+                movie.get("Path"),
+            ]
+        )
+
+    return movies, total
+
+
+def get_single_item(server: str, api_key: str, item_id: int) -> list:
+    """Retrieves the full JSON (to update a) Movie record"""
+    path = f"/Users/{api_key}/Items/{item_id}?api_key={api_key}"
+    params = {}
+    item, _ = http_get(server, path)
+
+    return item
+
+
+def update_single_item(server: str, api_key: str, item_id: int, _json: str) -> tuple:
+    """Updates a Movie record"""
+    path = f"/Items/{item_id}?api_key={api_key}"
+    params = get_single_item(server, api_key, item_id)
+    if _json:
+        params.update(read_json(_json))
+
+    return http_post(server, path, params)
+
+
+def refresh_single_item(server: str, api_key: str, item_id: int) -> tuple:
+    """Updates a Movie record"""
+    path = f"/Items/{item_id}/Refresh?api_key={api_key}"
+    path += "&MetadataRefreshMode=FullRefresh&ReplaceAllMetadata=true"
+    return http_post(server, path, {})
+
+
+def export_csv(csvpath: str, movies: list, w_path: bool, w_headers: bool) -> str:
+    """Export the full Movie list to a CSV"""
+    HEADERS = [
+        "Id",
+        "Name",
+        "Year",
+        "Genres",
+        "Runtime",
+        "Resolution",
+        "Subtitles",
+        "Imdb",
+    ]
+
+    if w_path:
+        HEADERS += ["Path"]
+
+    with open(csvpath, "w", newline="") as csvfile:
+        writer = csv.writer(csvfile, delimiter=";")
+        if w_headers:
+            writer.writerow(HEADERS)
+        for movie in movies:
+            writer.writerow(movie if w_path else movie[:8])
+
+
+def find_this(value: str, movies: list) -> list:
+    """Filters results in the Movie list"""
+    results = []
+    for movie in movies:
+        match = any(list(map(lambda c: value.lower() in str(c).lower(), movie)))
+
+        if match:
+            results += [movie]
+
+    return results
+
+
+def find_missing_imdb(movies: list) -> list:
+    """Filters results in the Movie list if these are missing the IMDB id"""
+    results = []
+    for movie in movies:
+        (_id, name, year, genre, duration, resolution, subs, imdb, path) = movie
+        if not imdb:
+            results += [(_id, name, year, path)]
+
+    return results
+
+
+def find_dupes(movies: list) -> list:
+    """Looks for similar Movies and returns the suspects"""
+    tmp, dupes = {}, {}
+    for movie in movies:
+        (_id, name, year, genre, duration, resolution, subs, imdb, path) = movie
+        if name not in list(tmp.keys()):
+            tmp[name] = []
+        tmp[name] += [
+            {"year": year or 0, "path": path or "", "resolution": resolution or ""}
+        ]
+
+    for key in tmp.keys():
+        if len(tmp.get(key)) > 1:
+            # are movies from the same year? are remakes?
+            _year = int(tmp.get(key)[0].get("year"))
+            not_remake = all(
+                list(map(lambda d: int(d.get("year")) == _year, tmp.get(key)))
+            )
+            if not_remake:
+                try:
+                    smaller = eval(tmp.get(key)[0].get("resolution"))
+                    remove_this = tmp.get(key)[0]
+                    for dup in tmp.get(key):
+                        if (
+                            dup.get("resolution")
+                            and eval(dup.get("resolution")) <= smaller
+                        ):
+                            remove_this = dup
+
+                    dupes[key] = {"files": tmp.get(key), "remove": remove_this}
+                except:
+                    pass
+
+    return dupes
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-a", "--api", type=str, default="", required=True, help="Emby API Key"
+    )
+    parser.add_argument(
+        "-s", "--server", type=str, default="", required=True, help="Emby Host"
+    )
+
+    parser.add_argument(
+        "--export", type=str, default="", required=False, help="Export CSV"
+    )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        default=False,
+        help="Will update an [--id] object using [--json] file.",
+    )
+    parser.add_argument(
+        "--find", type=str, default="", required=False, help="Find this value"
+    )
+    parser.add_argument(
+        "--dupes",
+        action="store_true",
+        default=False,
+        help="Print duplicates and suggest a movie to remove.",
+    )
+    parser.add_argument(
+        "--missing-imdb",
+        action="store_true",
+        default=False,
+        help="Print movies with missing IMDB id.",
+    )
+    parser.add_argument(
+        "--id", type=str, default="", required=False, help="Update this ID"
+    )
+    parser.add_argument(
+        "--json",
+        type=str,
+        default="",
+        required=False,
+        help="Path of the JSON file Or JSON string",
+    )
+    parser.add_argument(
+        "--path", action="store_true", default=False, help="Save file path in the CSV."
+    )
+    parser.add_argument(
+        "--header", action="store_true", default=False, help="Save CSV Header."
+    )
+
+    args = parser.parse_args()
+
+    if args.api and args.server:
+        if args.update and args.id and args.json:
+            resp, status = update_single_item(args.server, args.api, args.id, args.json)
+            print(f"* Id: {args.id}")
+            if int(status) >= 200 and int(status) <= 299:
+                print(f"* Updated ({resp})")
+                resp, status = refresh_single_item(args.server, args.api, args.id)
+                if int(status) >= 299:
+                    print(f"* Not refreshed ({resp})")
+                    sys.exit(1)
+                else:
+                    print(f"* Refreshed ({resp})")
+                    sys.exit(0)
+            else:
+                print(f"* Not Updated ({resp})")
+
+        else:
+            movies, total = get_media(args.server, args.api)
+
+            if args.find:
+                movies = find_this(args.find, movies)
+
+            if args.missing_imdb:
+                movies = find_missing_imdb(movies)
+
+            if args.dupes:
+                movies = find_dupes(movies)
+
+            if args.export:
+                export_csv(args.export, movies, args.path, args.header)
+            else:
+                pprint(movies)
+
+        sys.exit(0)
+
+    else:
+        parser.print_help()
