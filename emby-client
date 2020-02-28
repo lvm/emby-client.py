@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-git-profile - Emby Client in Pure Python with zero 3rd Party dependencies.
+emby-client - Emby Client in Pure Python with zero 3rd Party dependencies.
 License: BSD 3-Clause
 Copyright (c) 2020, Mauro <mauro@sdf.org>
 All rights reserved.
