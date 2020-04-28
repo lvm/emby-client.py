@@ -30,7 +30,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
 __author__ = "Mauro L"
-__version__ = "0.0.1"
+__version__ = "0.0.11"
 __license__ = "BSD3"
 
 import re
@@ -125,6 +125,13 @@ def get_imdb_id(providers: list) -> str:
     return imdb_id
 
 
+def get_director(peeps: list) -> str:
+    """Get movie Directors"""
+    return ";".join(
+        [peep.get("Name") for peep in peeps if peep.get("Type") == "Director"]
+    )
+
+
 def read_json(_json: str) -> dict:
     """Normally used when Updating a single Movie record"""
     path = Path(_json)
@@ -140,7 +147,7 @@ def get_media(server: str, api_key: str) -> list:
     path = f"/Users/{api_key}/Items"
     path += f"?Recursive=true&IncludeItemTypes=Movie"
     path += f"&api_key={api_key}"
-    path += "&Fields=ProviderIds,Path,Genres,ProductionYear,MediaStreams"
+    path += "&Fields=ProviderIds,Path,Genres,ProductionYear,MediaStreams,People"
 
     response, _ = http_get(server, path)
     movies = []
@@ -155,6 +162,7 @@ def get_media(server: str, api_key: str) -> list:
                 movie.get("ProductionYear"),
                 ";".join(movie.get("Genres") or []),
                 runtimeticks_to_human(movie.get("RunTimeTicks")),
+                get_director(movie.get("People")),
                 video_resolution(movie.get("MediaSources")),
                 has_subtitles(movie.get("MediaSources")),
                 get_imdb_id(movie.get("ProviderIds")),
@@ -199,6 +207,7 @@ def export_csv(csvpath: str, movies: list, w_path: bool, w_headers: bool) -> str
         "Year",
         "Genres",
         "Runtime",
+        "Director",
         "Resolution",
         "Subtitles",
         "Imdb",
@@ -212,7 +221,7 @@ def export_csv(csvpath: str, movies: list, w_path: bool, w_headers: bool) -> str
         if w_headers:
             writer.writerow(HEADERS)
         for movie in movies:
-            writer.writerow(movie if w_path else movie[:8])
+            writer.writerow(movie if w_path else movie[:9])
 
 
 def find_this(value: str, movies: list) -> list:
@@ -231,7 +240,18 @@ def find_missing_imdb(movies: list) -> list:
     """Filters results in the Movie list if these are missing the IMDB id"""
     results = []
     for movie in movies:
-        (_id, name, year, genre, duration, resolution, subs, imdb, path) = movie
+        (
+            _id,
+            name,
+            year,
+            genre,
+            duration,
+            director,
+            resolution,
+            subs,
+            imdb,
+            path,
+        ) = movie
         if not imdb:
             results += [(_id, name, year, path)]
 
@@ -242,7 +262,18 @@ def find_dupes(movies: list) -> list:
     """Looks for similar Movies and returns the suspects"""
     tmp, dupes = {}, {}
     for movie in movies:
-        (_id, name, year, genre, duration, resolution, subs, imdb, path) = movie
+        (
+            _id,
+            name,
+            year,
+            genre,
+            duration,
+            director,
+            resolution,
+            subs,
+            imdb,
+            path,
+        ) = movie
         if name not in list(tmp.keys()):
             tmp[name] = []
         tmp[name] += [
